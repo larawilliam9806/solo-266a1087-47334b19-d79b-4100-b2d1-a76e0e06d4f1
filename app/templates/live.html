@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}现库链路与端口 · 机房配线库{% endblock %}
+{% block content %}
+
+<section class="panel">
+  <h1>现库写入工作台</h1>
+  <p class="sub">
+    本页所有操作都直接写入现库 <span class="code-pill">live.db</span>。
+    可在恢复预览页打开后，到这里新增 / 删除链路或修改端口备注，模拟“等待确认期间现库照常写入”：
+    与预览端口无关的改动不会影响确认；占用所选端口或改动所列端口记录会在确认时被指出且整批不写入。
+  </p>
+
+  <h2>新增一条现库链路</h2>
+  <form method="post" action="{{ url_for('web.live_link_add') }}">
+    <div class="form-grid">
+      <div class="field">
+        <label>A 端端口</label>
+        <select name="a_port_id" required>
+          <option value="">请选择端口…</option>
+          {% for p in port_options %}
+          <option value="{{ p.id }}">{{ p.asset_no }} / {{ p.port_name }}{{ '（已占用 #' ~ p.occupied_link_id ~ '）' if p.occupied else '（空闲）' }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label>B 端端口</label>
+        <select name="b_port_id" required>
+          <option value="">请选择端口…</option>
+          {% for p in port_options %}
+          <option value="{{ p.id }}">{{ p.asset_no }} / {{ p.port_name }}{{ '（已占用 #' ~ p.occupied_link_id ~ '）' if p.occupied else '（空闲）' }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label>链路编号（可选）</label>
+        <input name="link_no" placeholder="如 LK-NEW-0001">
+      </div>
+      <div class="field">
+        <label>线缆类型（可选）</label>
+        <input name="cable_type" placeholder="如 六类网线">
+      </div>
+      <div class="field" style="min-width:220px;">
+        <label>备注（可选）</label>
+        <input name="remark" placeholder="本次常规写入说明">
+      </div>
+      <div class="field" style="flex:0 0 auto;">
+        <button class="btn" type="submit">写入现库</button>
+      </div>
+    </div>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>现库链路（{{ links|length }}）</h2>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead>
+      <tr>
+        <th>记录号</th><th>链路编号</th><th>A 端</th><th></th><th>B 端</th>
+        <th>类型</th><th>来源 / 时间</th><th style="width:90px;">操作</th>
+      </tr>
+      </thead>
+      <tbody>
+      {% for lk in links %}
+      <tr>
+        <td><span class="code-pill">#{{ lk.id }}</span></td>
+        <td><b>{{ lk.link_no or '—' }}</b>{% if lk.remark %}<div class="small">{{ lk.remark }}</div>{% endif %}</td>
+        <td class="coord">{{ lk.a_asset }}<br>{{ lk.a_port }}</td>
+        <td class="arrow">↔</td>
+        <td class="coord">{{ lk.b_asset }}<br>{{ lk.b_port }}</td>
+        <td>{{ lk.cable_type or '—' }}</td>
+        <td>
+          {% if lk.source == 'restored' %}
+            <span class="badge badge-info">备份补回</span>
+            <div class="small mt8">原备份 #{{ lk.restored_from_backup_id }}</div>
+          {% else %}
+            <span class="badge badge-muted">常规写入</span>
+          {% endif %}
+          <div class="small mt8">{{ lk.created_at }}</div>
+        </td>
+        <td>
+          <form method="post" action="{{ url_for('web.live_link_delete', link_id=lk.id) }}" class="inline">
+            <button class="btn btn-danger btn-sm" type="submit">删除释放</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px;">现库暂无链路</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>现库端口记录（{{ ports|length }}）</h2>
+  <p class="small">修改某端口备注后，若该端口出现在尚未确认的预览中，确认时会因“与预览所列记录不一致”被拦下。</p>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead>
+      <tr><th>记录号</th><th>设备资产号 / 名称</th><th>端口名</th><th>类型/速率</th><th>占用</th><th>备注（可行内修改）</th></tr>
+      </thead>
+      <tbody>
+      {% for p in ports %}
+      <tr>
+        <td><span class="code-pill">#{{ p.id }}</span></td>
+        <td>{{ p.asset_no }}<div class="small">{{ p.device_name }}</div></td>
+        <td class="mono"><b>{{ p.port_name }}</b></td>
+        <td>{{ p.port_type or '—' }} / {{ p.speed or '—' }}</td>
+        <td>
+          {% if p.occupied_link_id %}
+            <span class="badge badge-warn">链路 #{{ p.occupied_link_id }}</span>
+          {% else %}
+            <span class="badge badge-ok">空闲</span>
+          {% endif %}
+        </td>
+        <td>
+          <form method="post" action="{{ url_for('web.live_port_remark', port_id=p.id) }}" class="remark-form">
+            <input name="remark" value="{{ p.remark or '' }}" placeholder="端口备注">
+            <button class="btn btn-secondary btn-sm" type="submit">保存</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% endblock %}

@@ -1,0 +1,2 @@
+# 此占位文件用于让 data/ 目录进入版本库；
+# Docker Compose 会把 ./data 挂载为卷，首次启动自动生成 backup.db 与 live.db。

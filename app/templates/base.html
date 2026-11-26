@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}机房配线库 · 误删链路恢复{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="{{ url_for('web.recovery_index') }}">
+      <span class="brand-mark">⇄</span>
+      <span>机房配线库 · 误删链路恢复</span>
+    </a>
+    <nav class="nav">
+      <a href="{{ url_for('web.recovery_index') }}"
+         class="{{ 'active' if request.endpoint == 'web.recovery_index' }}">备份恢复</a>
+      <a href="{{ url_for('web.live_page') }}"
+         class="{{ 'active' if request.endpoint == 'web.live_page' }}">现库链路 / 端口</a>
+      <form method="post" action="{{ url_for('web.demo_reseed') }}" class="inline">
+        <button type="submit" class="btn btn-ghost btn-sm">重置演示数据</button>
+      </form>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap content">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flashes">
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category or 'info' }}">{{ message }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="footer wrap">
+  <span>备份库 backup.db 与现库 live.db 为两份独立 SQLite · 两端按「设备资产号 + 端口名」匹配 · 记录号不参与匹配</span>
+</footer>
+{% block scripts %}{% endblock %}
+</body>
+</html>

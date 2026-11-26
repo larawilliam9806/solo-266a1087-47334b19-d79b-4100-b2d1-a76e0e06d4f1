@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% macro endpoint_card(ep, label) %}
+{% set occupied = ep.occupants and ep.occupants|length > 0 %}
+{% set cls = 'missing' if not ep.port else ('occupied' if occupied else 'free') %}
+<div class="end-card {{ cls }}">
+  <div class="end-head">
+    <span class="end-tag">{{ label }}端 · {{ ep.asset_no }} / {{ ep.port_name }}</span>
+    {% if not ep.port %}
+      <span class="badge badge-bad">无现库记录</span>
+    {% elif occupied %}
+      <span class="badge badge-warn">端口占用中</span>
+    {% else %}
+      <span class="badge badge-ok">端口空闲</span>
+    {% endif %}
+  </div>
+
+  {% if ep.port %}
+  <dl class="dl">
+    <dt>现库记录号</dt><dd><span class="code-pill">端口 #{{ ep.port.port_id }}</span></dd>
+    <dt>设备资产号</dt><dd class="mono">{{ ep.port.asset_no }}</dd>
+    <dt>设备名称</dt><dd>{{ ep.port.device_name or '—' }}</dd>
+    <dt>型号 / 位置</dt><dd>{{ ep.port.model or '—' }} · {{ ep.port.location or '未登记位置' }}</dd>
+    <dt>端口名</dt><dd class="mono">{{ ep.port.port_name }}</dd>
+    <dt>类型 / 速率</dt><dd>{{ ep.port.port_type or '—' }} / {{ ep.port.speed or '—' }}</dd>
+    <dt>状态</dt><dd>{{ ep.port.status or '—' }}</dd>
+    <dt>备注</dt><dd>{{ ep.port.remark or '—' }}</dd>
+  </dl>
+
+  {% for occ in ep.occupants %}
+  <div class="hint-reuse reused mt8">
+    占用链路：现库 <b>#{{ occ.link_id }}</b>（{{ occ.link_no or '未编号' }}），
+    {{ occ.a_asset_no }}/{{ occ.a_port_name }} ↔ {{ occ.b_asset_no }}/{{ occ.b_port_name }}；
+    当前端口在该链路的 <b>{{ occ.found_at_end }} 端</b>。
+  </div>
+  {% endfor %}
+  {% else %}
+  <p class="small" style="margin:6px 0 0;">
+    预览未能按「设备资产号 + 端口名」匹配到现库端口记录。
+  </p>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% block content %}
+
+{% if confirm_error %}
+<section class="panel" style="border-color:var(--bad-line);background:#fff8f8;">
+  <h2 class="text-bad">✕ {{ confirm_error }}</h2>
+  {% if confirm_errors %}
+  <div class="reasons" style="margin-top:6px;">
+    <span class="title">确认时发现的冲突 / 不一致：</span>
+    <ul>
+      {% for ce in confirm_errors %}
+        {% for r in ce.reasons %}
+        <li><b>备份链路 #{{ ce.backup_id }}：</b>{{ r }}</li>
+        {% endfor %}
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  <p class="small mt8">
+    下方是按当前现库重新生成的预览与新凭证；冲突解除后可直接用新凭证确认，仍有红色阻碍时确认按钮不可用。
+  </p>
+</section>
+{% endif %}
+
+<section class="panel">
+  <h1>恢复预览（共 {{ items|length }} 条备份链路）</h1>
+  <p class="sub">
+    以下展示每条备份链路两端在<b>此刻现库中对应的端口记录</b>、占用情况以及不能补回的原因。
+    记录号仅作展示，匹配只认资产号与端口名。预览凭证已对所列记录做签名快照，
+    确认时若这些记录或端口占用发生变化，将整批拒绝。
+  </p>
+</section>
+
+<form method="post" action="{{ url_for('web.confirm_form') }}" id="confirm-form">
+  <input type="hidden" name="token" value="{{ token }}">
+  {% for it in items %}
+  <input type="hidden" name="link_ids" value="{{ it.backup_id }}">
+  {% endfor %}
+
+  {% for it in items %}
+  <article class="link-card {{ 'restorable' if it.restorable else 'blocked' }}">
+    <div class="link-card-head">
+      <span class="code-pill">备份记录 #{{ it.backup_id }}</span>
+      <span class="link-title">{{ it.link_no or '未命名链路' }}</span>
+      <span class="small">{{ it.cable_type or '' }}</span>
+      <span class="spacer" style="flex:1"></span>
+      {% if it.same_link %}
+        <span class="badge badge-muted">现库已有相同两端链路 #{{ it.same_link.id }}</span>
+      {% elif it.restorable %}
+        <span class="badge badge-ok">校验通过 · 可补回</span>
+      {% else %}
+        <span class="badge badge-bad">不可补回 / 确认将冲突</span>
+      {% endif %}
+    </div>
+
+    <div class="link-card-body">
+      <div class="ends">
+        {{ endpoint_card(it.a, 'A') }}
+        <div class="end-sep">↔</div>
+        {{ endpoint_card(it.b, 'B') }}
+      </div>
+
+      {% if it.id_hint and it.id_hint.kind == 'reused' %}
+      <div class="hint-reuse reused">
+        ⚠ <b>记录号复用提示：</b>备份记录 #{{ it.backup_id }} 的号码，在现库已是一条不同的链路
+        <b>#{{ it.id_hint.live_link.id }}</b>
+        （{{ it.id_hint.live_link.a_asset_no }}/{{ it.id_hint.live_link.a_port_name }} ↔
+        {{ it.id_hint.live_link.b_asset_no }}/{{ it.id_hint.live_link.b_port_name }}）。
+        系统没有按记录号匹配，仍按两端资产号+端口名识别上方端口。
+      </div>
+      {% elif it.id_hint and it.id_hint.kind == 'same' %}
+      <div class="hint-reuse same">
+        ℹ 现库 #{{ it.id_hint.live_link.id }} 与该备份链路两端一致，应为同一条幸存记录；恢复它可能造成重复。
+      </div>
+      {% endif %}
+
+      {% if it.reasons %}
+      <div class="reasons">
+        <span class="title">不能补回的原因（{{ it.reasons|length }}）：</span>
+        <ul>
+          {% for r in it.reasons %}<li>{{ r }}</li>{% endfor %}
+        </ul>
+      </div>
+      {% else %}
+      <p class="mt8 text-ok" style="font-weight:600;">
+        ✓ 两端口均匹配到现库记录、当前空闲，且与本预览快照一致，可在确认时整批写入。
+      </p>
+      {% endif %}
+    </div>
+  </article>
+  {% endfor %}
+
+  <div class="confirm-bar">
+    <a class="btn btn-secondary" href="{{ url_for('web.recovery_index') }}">← 返回重新勾选</a>
+    <a class="btn btn-secondary" href="{{ url_for('web.live_page') }}" target="_blank" rel="noopener">
+      前往现库写入 / 制造并发改动 ↗
+    </a>
+    <span class="spacer"></span>
+    {% if preview.all_restorable %}
+      <span class="small text-ok">全部 {{ items|length }} 条链路当前校验通过</span>
+      <button type="submit" class="btn btn-ok">确认整批补回（{{ items|length }} 条）</button>
+    {% else %}
+      <span class="small text-bad">存在冲突项：仍可提交确认，服务端将指出原因且整批不写入</span>
+      <button type="submit" class="btn">确认整批校验 / 补回</button>
+    {% endif %}
+  </div>
+</form>
+
+{% endblock %}

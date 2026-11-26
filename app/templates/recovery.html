@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="panel">
+  <h1>从备份勾选误删链路并恢复</h1>
+  <p class="sub">
+    下表来自备份库 <span class="code-pill">backup.db</span>。勾选值班员确认误删的链路后，
+    系统会按 <b>设备资产号 + 端口名</b> 到现库 <span class="code-pill">live.db</span>
+    匹配两端端口记录并给出预览与不能补回的原因；确认时整批校验、整批写入。
+  </p>
+  <div class="rule-grid">
+    <div class="rule"><b>① 不按记录号匹配：</b>备份里的 links 记录号可能已被现库新链路复用，两端一律按资产号与端口名匹配。</div>
+    <div class="rule"><b>② 端口唯一占用：</b>每个端口最多接一条链路，出现在现库任何链路的 A 端或 B 端都算占用。</div>
+    <div class="rule"><b>③ 现库不冻结：</b>预览后现库可照常增删链路；只有与所选端口相关的变化会在确认时被拦下，无关改动不影响确认。</div>
+    <div class="rule"><b>④ 整批原子写入：</b>确认时任一端口被占用或预览记录已变化，都会指出原因且整批不写入。</div>
+  </div>
+</section>
+
+<section class="stats">
+  <div class="stat brand"><div class="num">{{ stats.backup_total }}</div><div class="lbl">备份链路总数</div></div>
+  <div class="stat"><div class="num">{{ stats.deleted }}</div><div class="lbl">现库已无相同两端（疑似误删）</div></div>
+  <div class="stat ok"><div class="num">{{ stats.restorable }}</div><div class="lbl">其中当前可补回</div></div>
+  <div class="stat bad"><div class="num">{{ stats.blocked }}</div><div class="lbl">存在缺失 / 占用等阻碍</div></div>
+  <div class="stat"><div class="num">{{ stats.present }}</div><div class="lbl">两端一致、仍在现库</div></div>
+</section>
+
+<form method="post" action="{{ url_for('web.preview_form') }}" id="select-form">
+  <section class="panel">
+    <div class="toolbar">
+      <div class="tabs">
+        <a href="{{ url_for('web.recovery_index', show='deleted') }}" class="{{ 'active' if show != 'all' }}">疑似误删（{{ stats.deleted }}）</a>
+        <a href="{{ url_for('web.recovery_index', show='all') }}" class="{{ 'active' if show == 'all' }}">全部备份记录（{{ stats.backup_total }}）</a>
+      </div>
+      <label class="small"><input type="checkbox" id="check-all-visible"> 全选当前列表</label>
+      <div class="spacer"></div>
+      <button type="submit" class="btn">预览所选链路 →</button>
+    </div>
+
+    <div class="table-wrap mt8">
+      <table class="grid">
+        <thead>
+        <tr>
+          <th style="width:36px;"></th>
+          <th>备份记录号</th>
+          <th>链路编号 / 类型</th>
+          <th>A 端（资产号 / 端口名）</th>
+          <th></th>
+          <th>B 端（资产号 / 端口名）</th>
+          <th>现库状态</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for it in items %}
+        <tr>
+          <td><input type="checkbox" name="link_ids" value="{{ it.backup_id }}" class="row-check"
+                     {% if not it.found %}disabled{% endif %}></td>
+          <td>
+            <span class="code-pill">#{{ it.backup_id }}</span>
+            {% if it.id_hint and it.id_hint.kind == 'reused' %}
+              <div class="small text-warn mt8" style="color:var(--warn)">⚠ 该记录号现库已被复用</div>
+            {% elif it.id_hint and it.id_hint.kind == 'same' %}
+              <div class="small text-muted mt8">现库 #{{ it.id_hint.live_link.id }} 为同一链路</div>
+            {% endif %}
+          </td>
+          <td>
+            <div><b>{{ it.link_no or '—' }}</b></div>
+            <div class="small">{{ it.cable_type or '' }}</div>
+          </td>
+          <td class="coord">{{ it.a.asset_no }}<br>{{ it.a.port_name }}</td>
+          <td class="arrow">↔</td>
+          <td class="coord">{{ it.b.asset_no }}<br>{{ it.b.port_name }}</td>
+          <td>
+            {% if it.same_link %}
+              <span class="badge badge-muted">仍在现库 #{{ it.same_link.id }}</span>
+            {% elif it.restorable %}
+              <span class="badge badge-ok">两端空闲 · 可补回</span>
+            {% else %}
+              <span class="badge badge-bad">不能直接补回</span>
+              <div class="small text-bad mt8">{{ it.reasons|length }} 项原因，勾选后预览</div>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:28px;">当前筛选下没有记录</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</form>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // 仅做便捷全选；没有 JS 时逐个勾选同样可用
+  (function () {
+    var all = document.getElementById('check-all-visible');
+    if (!all) return;
+    var boxes = Array.prototype.slice.call(document.querySelectorAll('.row-check'));
+    all.addEventListener('change', function () {
+      boxes.forEach(function (b) { if (!b.disabled) b.checked = all.checked; });
+    });
+  })();
+</script>
+{% endblock %}

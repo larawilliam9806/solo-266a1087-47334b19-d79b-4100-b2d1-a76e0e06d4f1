@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} · 机房配线库恢复{% endblock %}
+{% block content %}
+<section class="panel" style="text-align:center;padding:48px 24px;">
+  <h1 style="font-size:34px;">{{ code }}</h1>
+  <p class="sub">{{ message }}</p>
+  <a class="btn" href="{{ url_for('web.recovery_index') }}">返回恢复页</a>
+</section>
+{% endblock %}

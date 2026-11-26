@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}补回成功 · 机房配线库恢复{% endblock %}
+{% block content %}
+
+<section class="panel">
+  <div class="result-hero">
+    <div class="result-check">✓</div>
+    <h1>已整批补回 {{ count }} 条误删链路</h1>
+    <p class="sub">
+      所有所选端口在确认事务内均为空闲，且现库端口记录与预览快照一致；
+      系统已在同一个 SQLite 事务中写入并提交。补回链路使用现库<b>新的记录号</b>
+      （备份记录号可能已被复用，故不沿用旧号）。
+    </p>
+  </div>
+
+  <div class="table-wrap mt16">
+    <table class="grid">
+      <thead>
+      <tr>
+        <th>现库新记录号</th>
+        <th>链路编号</th>
+        <th>A 端</th>
+        <th></th>
+        <th>B 端</th>
+        <th>线缆类型</th>
+        <th>来源</th>
+      </tr>
+      </thead>
+      <tbody>
+      {% for lk in restored %}
+      <tr>
+        <td><span class="badge badge-ok">现库 #{{ lk.new_id }}</span>
+            <div class="small text-muted mt8">原备份 #{{ lk.backup_id }}</div></td>
+        <td><b>{{ lk.link_no or '—' }}</b>
+            {% if lk.remark %}<div class="small">{{ lk.remark }}</div>{% endif %}</td>
+        <td class="coord">{{ lk.a_coord }}</td>
+        <td class="arrow">↔</td>
+        <td class="coord">{{ lk.b_coord }}</td>
+        <td>{{ lk.cable_type or '—' }}</td>
+        <td><span class="badge badge-info">从备份补回</span></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="toolbar mt16">
+    <a class="btn" href="{{ url_for('web.live_page') }}">在现库链路表中查看 →</a>
+    <span class="spacer" style="flex:1"></span>
+    <a class="btn btn-secondary" href="{{ url_for('web.recovery_index') }}">继续恢复其他链路</a>
+  </div>
+</section>
+
+{% endblock %}
