@@ -98,7 +98,7 @@
   <div class="table-wrap">
     <table class="grid">
       <thead>
-      <tr><th>记录号</th><th>设备资产号 / 名称</th><th>端口名</th><th>类型/速率</th><th>占用</th><th>备注（可行内修改）</th></tr>
+      <tr><th>记录号</th><th>设备资产号 / 名称</th><th>端口名</th><th>类型/速率</th><th>占用</th><th>备注（可行内修改）</th><th>接线历史</th></tr>
       </thead>
       <tbody>
       {% for p in ports %}
@@ -119,6 +119,10 @@
             <input name="remark" value="{{ p.remark or '' }}" placeholder="端口备注">
             <button class="btn btn-secondary btn-sm" type="submit">保存</button>
           </form>
+        </td>
+        <td>
+          <a class="btn btn-secondary btn-sm"
+             href="{{ url_for('web.history_page', port_id=p.id) }}">接线历史</a>
         </td>
       </tr>
       {% endfor %}

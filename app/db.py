@@ -80,6 +80,73 @@ BEGIN
 END;
 """
 
+# ---------------------------------------------------------------------------
+# 接线历史
+#
+# 历史按“历史段（segment / epoch）”组织：首次启用为当前已有接线写一个起始
+# 变更编号（baseline）；重置演示数据会重建库并开启一个新的历史段，新段编号
+# 重新从 1 开始，旧段编号 + 旧段标识不会指向新段记录。
+#
+# change_revisions：每“一笔”变更（一次手工增 / 一次手工删 / 一整批补回）一行。
+# link_changes：该笔变更实际改动的每条链路一行 —— 新增一笔历史写入量只随
+# 本次改动的链路数增长，而不是复制整库接线快照。
+# 端点以「资产号 + 端口名」坐标冗余落库，端口记录日后被删 / 重建仍可查历史。
+# ---------------------------------------------------------------------------
+HISTORY_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS history_segments (
+        segment_id TEXT PRIMARY KEY,              -- 历史段标识（重置后变化，用于隔离旧编号）
+        segment_no INTEGER NOT NULL,              -- 第几段（从 1 开始）
+        reason     TEXT NOT NULL DEFAULT 'enable',-- enable / seed / reseed
+        note       TEXT,
+        started_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS history_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS change_revisions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        segment_id  TEXT NOT NULL,
+        rev_no      INTEGER NOT NULL,             -- 段内变更编号（从 1 开始）
+        kind        TEXT NOT NULL,                -- baseline/manual_add/manual_delete/restore_batch
+        channel     TEXT,                         -- web/api/system
+        title       TEXT,
+        link_count  INTEGER NOT NULL DEFAULT 0,   -- 本笔改动的链路数
+        created_at  TEXT NOT NULL,                -- 提交时间（与接线写入同一事务）
+        UNIQUE (segment_id, rev_no)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS link_changes (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        segment_id   TEXT NOT NULL,
+        rev_no       INTEGER NOT NULL,
+        revision_id  INTEGER,
+        action       TEXT NOT NULL,               -- baseline / connect / disconnect
+        link_id      INTEGER,
+        link_no      TEXT,
+        a_asset_no   TEXT,
+        a_port_name  TEXT,
+        b_asset_no   TEXT,
+        b_port_name  TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_change_revisions_segment ON change_revisions(segment_id, rev_no)",
+    "CREATE INDEX IF NOT EXISTS idx_link_changes_rev ON link_changes(segment_id, rev_no)",
+    "CREATE INDEX IF NOT EXISTS idx_link_changes_a ON link_changes(a_asset_no, a_port_name)",
+    "CREATE INDEX IF NOT EXISTS idx_link_changes_b ON link_changes(b_asset_no, b_port_name)",
+]
+
+HISTORY_SQL = ";\n".join(s.strip().rstrip(";") for s in HISTORY_STATEMENTS) + ";\n"
+
+# 新建库时一次性建好全部表
+SCHEMA_SQL = SCHEMA_SQL + "\n" + HISTORY_SQL
+
 
 def connect(path: PathLike) -> sqlite3.Connection:
     """打开一个配置好的 SQLite 连接。
@@ -94,6 +161,12 @@ def connect(path: PathLike) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 30000")
+    # WAL：查历史的读连接不会挡住现库提交接线变更；文件系统不支持时
+    # SQLite 会自动退回普通回滚日志模式，busy_timeout 仍负责排队。
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.DatabaseError:
+        pass
     return conn
 
 

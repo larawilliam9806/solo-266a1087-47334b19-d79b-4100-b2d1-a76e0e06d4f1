@@ -18,6 +18,8 @@
          class="{{ 'active' if request.endpoint == 'web.recovery_index' }}">备份恢复</a>
       <a href="{{ url_for('web.live_page') }}"
          class="{{ 'active' if request.endpoint == 'web.live_page' }}">现库链路 / 端口</a>
+      <a href="{{ url_for('web.history_page') }}"
+         class="{{ 'active' if request.endpoint == 'web.history_page' }}">接线历史</a>
       <form method="post" action="{{ url_for('web.demo_reseed') }}" class="inline">
         <button type="submit" class="btn btn-ghost btn-sm">重置演示数据</button>
       </form>

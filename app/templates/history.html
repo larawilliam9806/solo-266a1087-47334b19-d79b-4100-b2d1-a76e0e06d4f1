@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}接线历史 · 机房配线库{% endblock %}
+{% block content %}
+
+<section class="panel">
+  <h1>现库接线历史</h1>
+  <p class="sub">
+    值班员排查掉线时，可选择一个端口和两个变更编号：页面先显示<strong>起始编号提交后</strong>该端口的对端或空闲状态，
+    再列出从<strong>下一笔</strong>到<strong>结束编号</strong>之间的每次接线、拆线及当时对端。
+    拆线后又接回原对端会作为两笔独立记录分别显示。历史与接线变更在同一事务提交，失败不会留下历史。
+  </p>
+
+  {% if current_segment %}
+  <p class="small">
+    当前历史段：
+    <span class="code-pill" data-role="segment-id">{{ current_segment.segment_id[:8] }}</span>
+    第 {{ current_segment.segment_no }} 段 · 开启于 {{ current_segment.started_at }}
+    （重置演示数据后会另开一段历史，旧编号不会指向新记录）
+  </p>
+  {% endif %}
+
+  <form method="get" action="{{ url_for('web.history_page') }}" class="history-form" data-role="history-query-form">
+    <div class="form-grid">
+      <div class="field" style="min-width:260px;">
+        <label for="port_id">选择端口</label>
+        <select id="port_id" name="port_id" required>
+          <option value="">请选择要排查的端口…</option>
+          {% for p in ports %}
+          <option value="{{ p.id }}"
+                  {% if selected_port_id|string == p.id|string %}selected{% endif %}>
+            {{ p.coord }}{{ '（已占用）' if p.occupied else '（空闲）' }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="start">起始变更编号（显示该编号提交后的状态）</label>
+        <select id="start" name="start">
+          {% for r in revisions %}
+          <option value="{{ r.rev_no }}"
+                  {% if selected_start|string == r.rev_no|string %}selected{% endif %}>
+            #{{ r.rev_no }} · {{ r.created_at }} · {{ r.kind_label }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="end">结束变更编号</label>
+        <select id="end" name="end">
+          {% for r in revisions %}
+          <option value="{{ r.rev_no }}"
+                  {% if selected_end|string == r.rev_no|string %}selected{% endif %}>
+            #{{ r.rev_no }} · {{ r.created_at }} · {{ r.kind_label }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field" style="flex:0 0 auto;">
+        <button class="btn" type="submit">查询接线历史</button>
+      </div>
+    </div>
+  </form>
+</section>
+
+{% if result %}
+{% set s = result.state_at_start %}
+<section class="panel" data-role="history-result"
+         data-port="{{ result.port.coord }}"
+         data-start="{{ result.start_rev }}" data-end="{{ result.end_rev }}">
+  <h2>查询结果：{{ result.port.coord }}</h2>
+
+  <div class="start-state-card {{ 'connected' if s.occupied else 'idle' }}" data-role="start-state">
+    <div class="start-state-title">
+      起始编号 <span class="code-pill">#{{ result.start_rev }}</span>
+      提交时间 {{ result.start.committed_at }} 提交后的状态
+    </div>
+    {% if s.occupied %}
+    <div class="start-state-body">
+      <span class="badge badge-info">已接线</span>
+      <span class="peer-text">对端：<b class="coord" data-role="start-peer">{{ s.peer_coord }}</b></span>
+      {% if s.link_no %}<span class="small">链路编号 {{ s.link_no }}</span>{% endif %}
+    </div>
+    {% else %}
+    <div class="start-state-body">
+      <span class="badge badge-ok" data-role="start-idle">空闲</span>
+      <span class="peer-text text-muted">该端口在 #{{ result.start_rev }} 提交后没有接任何链路</span>
+    </div>
+    {% endif %}
+  </div>
+
+  <h2 class="mt16">
+    变更明细：#{{ result.start_rev + 1 if result.start_rev < result.end_rev else result.start_rev }}
+    → #{{ result.end_rev }}
+    <span class="small">（从下一笔到结束编号，共 {{ result.count }} 次与该端口相关的接线 / 拆线）</span>
+  </h2>
+  <div class="table-wrap">
+    <table class="grid" data-role="event-table">
+      <thead>
+      <tr>
+        <th>变更编号</th><th>提交时间</th><th>操作</th><th>本端</th><th>对端</th>
+        <th>链路编号</th><th>变更来源</th>
+      </tr>
+      </thead>
+      <tbody>
+      {% for e in result.events %}
+      <tr data-role="event-row" data-action="{{ e.action }}">
+        <td><span class="code-pill">#{{ e.rev_no }}</span></td>
+        <td class="small">{{ e.committed_at }}</td>
+        <td>
+          {% if e.action == 'connect' %}
+            <span class="badge badge-ok">接线</span>
+          {% else %}
+            <span class="badge badge-bad">拆线</span>
+          {% endif %}
+        </td>
+        <td class="coord">{{ result.port.coord }}<div class="small">出现在{{ e.self_side }}端</div></td>
+        <td class="coord" data-role="event-peer">{{ e.peer_coord }}</td>
+        <td>{{ e.link_no or '—' }}</td>
+        <td><span class="badge badge-muted">{{ e.revision_kind_label }}</span></td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="7" style="text-align:center;color:var(--muted);padding:24px;">
+          #{{ result.start_rev }} 之后到 #{{ result.end_rev }} 之间，该端口没有接线或拆线记录。
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<section class="panel">
+  <h2>变更编号与提交时间（当前历史段，共 {{ revisions|length }} 笔）</h2>
+  <p class="small">
+    每一次网页 / API 手工增加或删除链路各记一笔；备份整批补回共用一笔。编号与接线写入在同一事务提交。
+  </p>
+  <div class="table-wrap">
+    <table class="grid" data-role="revision-table">
+      <thead>
+      <tr><th>变更编号</th><th>提交时间</th><th>类型</th><th>本笔改动链路数</th><th>渠道</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+      {% for r in revisions|reverse %}
+      <tr data-role="revision-row" data-rev="{{ r.rev_no }}">
+        <td><span class="code-pill">#{{ r.rev_no }}</span></td>
+        <td class="mono">{{ r.created_at }}</td>
+        <td><span class="badge badge-info">{{ r.kind_label }}</span></td>
+        <td>{{ r.link_count }}</td>
+        <td>{{ {'web':'网页','api':'API','system':'系统'}.get(r.channel, r.channel or '—') }}</td>
+        <td class="small">{{ r.title or '' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:24px;">暂无变更记录</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% endblock %}

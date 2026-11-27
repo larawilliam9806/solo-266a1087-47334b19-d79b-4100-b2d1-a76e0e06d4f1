@@ -9,6 +9,10 @@
 - 预览后现库可照常写入；只有涉及所选端口 / 所列记录的变化会在确认时被拦下，**无关改动不影响确认**
 - 确认在 `BEGIN IMMEDIATE` 事务内复查：端口记录与预览快照一致 **且** 全部空闲，才整批插入；
   否则逐条指出原因并回滚，**整批不写入**
+- **接线历史 `/history`**：选一个端口和两个变更编号，查看起始编号提交后的对端 / 空闲状态，
+  以及之后每笔接线、拆线及对端；拆了又接回原对端会分成两条显示。首次启用为已有接线记 `#1`
+  起始编号，重启不丢；网页 / API 手工增删各一笔，整批补回共用一笔；接线与历史同事务提交。
+  重置演示数据会另开一个历史段，旧编号不会指向新记录。
 
 ## 快速开始
 
@@ -58,6 +62,72 @@ python -m pytest tests/ -q
 
 顶部“重置演示数据”可随时把两份库恢复到初始场景（JSON API 为 `POST /api/demo/reseed`）。
 
+## 接线历史与掉线排查（`/history`）
+
+顶部导航点 **接线历史**（也可用 `/wiring-history`、`/live/history`）：
+
+1. **选择端口**：下拉列出全部现库端口及当前空闲 / 占用状态；现库页每个端口行也有“接线历史”直达链接。
+2. 下拉选择 **起始变更编号** 与 **结束变更编号**，每项都显示 `#编号 · 提交时间 · 类型`。
+3. 页面先给出 **起始编号提交后** 该端口的状态：
+   - 空闲 → 绿色“空闲”标记；
+   - 已接线 → 显示 **对端资产号/端口名** 与链路编号。
+4. 然后列出 **从下一笔（起始编号 +1）到结束编号** 之间，与该端口相关的每次 **接线 / 拆线**：
+   变更编号、提交时间、操作徽标、本端 A/B 侧、**对端**、链路编号、来源。
+   拆线后又接回同一个对端，是 `拆线`、`接线` 两条独立记录，不会合并。
+5. 页面下方表格列出当前历史段的全部 **变更编号与提交时间**、类型、本笔改动链路数与渠道。
+
+编号是**历史段内从 1 开始的连续整数**：
+
+- **首次启用**（旧库升级或全新播种）会把当时已有的 5 条接线整体记为 `#1 起始基线`；
+- 一次网页表单或 JSON API 的手工新增 / 删除各产生一个新编号（`manual_add` / `manual_delete`）；
+- 备份**整批补回共用一个编号**（`restore_batch`），编号下为本次补回的 N 条链路各写一行增量；
+- 接线写入与历史明细在**同一个 `BEGIN IMMEDIATE` 事务**里提交；校验冲突 / 约束失败 / 历史写入异常
+  都会整体回滚，**失败不留任何历史编号**；
+- 每个编号只写 1 行 `change_revisions` + 本次改动链路数行 `link_changes`，
+  因此每笔新增历史的数据量是 O(本次改动链路数)，不随全库接线总量膨胀；
+- 数据库文件持久化在 `data/live.db`（compose 卷挂载），**重启进程 / 容器后仍按原编号查询**；
+- 读历史走独立连接，SQLite 启用 WAL，**查询期间现库仍可正常提交接线变更**。
+
+**重置演示数据后另开一段历史**：`POST /api/demo/reseed`（或页面顶部“重置演示数据”）会重建
+live.db 并生成新的 `segment_id`，段内编号重新从 `#1` 基线开始。用新段查旧的大号会得到
+`404 revision_not_found`；携带旧 `segment_id` 查询会得到 `410 history_segment_gone`，
+旧编号绝不指向新段记录。
+
+### 接线历史 JSON API
+
+```bash
+# 当前历史段 + 编号列表 + 端口列表（不带端口参数时为总览）
+curl -s localhost:8000/api/history
+curl -s localhost:8000/api/history/revisions
+
+# 按端口记录号查询：起始 #1 提交后的状态 + #2..#4 的接线/拆线
+curl -s "localhost:8000/api/history?port_id=15&start=1&end=4"
+# 等价写法：from/to、from_rev/to_rev，或按坐标（端口名自身可含 /，只切第一个 /）
+curl -s "localhost:8000/api/history?port=ZC-PP-11/P07&from=1&to=4"
+curl -s "localhost:8000/api/history?asset_no=ZC-HX-01&port_name=GE1/0/1&start=1&end=1"
+# 路径风格与 POST 风格
+curl -s localhost:8000/api/history/port/15/1/4
+curl -s -X POST localhost:8000/api/history/query \
+  -H 'Content-Type: application/json' -d '{"port_id":15,"start":1,"end":4}'
+
+# 某一笔变更改了哪几条链路
+curl -s localhost:8000/api/history/revisions/2
+# 历史段
+curl -s localhost:8000/api/history/segments
+```
+
+查询响应中：
+
+- `state_at_start`（别名 `start_state` / `from_state` / `baseline_state`）：
+  `{state:"idle"|"connected", occupied, idle, label, peer:{coord,...}|null, peer_coord, ...}`；
+- `events`（别名 `changes` / `history` / `timeline` / `records`）：
+  每项含 `rev_no`/`number`、`committed_at`、`action`（`connect`/`disconnect`）、
+  `action_label`（`接线`/`拆线`）、`peer_coord`、`peer`、`link_id`、`link_no` 等；
+- 同时返回 `segment_id` / `epoch_id`，重置后该标识会变化。
+
+兼容别名：页面 `/wiring-history`、`/live/history`；接口前缀 `/api/wiring-history`、
+`/api/live/history`；编号列表 `/api/revisions`、`/api/changes`。
+
 ## 内置演示场景
 
 | 备份记录 | 两端坐标 | 设计好的情形 |
@@ -101,13 +171,16 @@ curl -s localhost:8000/api/confirm \
   -H 'Content-Type: application/json' \
   -d '{"link_ids":[3]}'
 
-# 现库常规写入
+# 现库常规写入（成功响应额外带 revision 变更编号信息；POST /api/live/links/add 为等价别名）
 curl -s localhost:8000/api/live/links
 curl -s localhost:8000/api/live/links -H 'Content-Type: application/json' \
   -d '{"a_asset":"ZC-PP-11","a_port":"P07","b_asset":"ZC-PP-11","b_port":"P08"}'
 curl -s -X DELETE localhost:8000/api/live/links/9
 curl -s -X PATCH localhost:8000/api/live/ports/3 \
   -H 'Content-Type: application/json' -d '{"remark":"新备注"}'
+
+# 接线历史（详见上文“接线历史与掉线排查”）
+curl -s "localhost:8000/api/history?port_id=15&start=1&end=4"
 
 curl -s -X POST localhost:8000/api/demo/reseed
 ```
@@ -120,15 +193,17 @@ token 无效 / 过期返回 `400`。
 ```
 .
 ├── app/
-│   ├── __init__.py      # Flask 工厂、健康检查、错误页
-│   ├── db.py            # SQLite 连接、schema、占用触发器
-│   ├── core.py          # 匹配 / 预览快照 / 原子确认 / 现库写入
+│   ├── __init__.py      # Flask 工厂、健康检查、错误页、历史引导
+│   ├── db.py            # SQLite 连接、schema、占用触发器、历史表
+│   ├── core.py          # 匹配 / 预览快照 / 原子确认 / 现库写入（同事务记历史）
+│   ├── history.py       # 历史段 / 变更编号 / 增量明细 / 端口区间回放
 │   ├── tokens.py        # 预览快照签名 token
-│   ├── routes.py        # HTML 路由 + JSON API
+│   ├── routes.py        # HTML 路由 + JSON API（含 /history 与 /api/history）
 │   ├── seed.py          # 演示数据（python -m app.seed）
-│   ├── templates/       # base/recovery/preview/result/live/error
+│   ├── templates/       # base/recovery/preview/result/live/history/error
 │   └── static/style.css
 ├── tests/test_recovery.py
+├── tests/test_history.py
 ├── data/                # backup.db / live.db（运行时生成，compose 卷挂载）
 ├── Dockerfile
 ├── docker-compose.yml

@@ -43,6 +43,14 @@ def create_app(config: dict | None = None) -> Flask:
 
         ensure_seed(app.config["LIVE_DB"], app.config["BACKUP_DB"])
 
+    # 无论是否自动播种，都保证现库接线历史可用：旧库无损升级并为已有接线
+    # 补一个起始变更编号；对已启用的库幂等，重启不会重复记账。
+    live_db_path = app.config["LIVE_DB"]
+    if live_db_path and live_db_path != ":memory:":
+        from .history import ensure_history
+
+        ensure_history(live_db_path)
+
     from .routes import bp
 
     app.register_blueprint(bp)

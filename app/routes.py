@@ -12,7 +12,7 @@ from flask import (
     url_for,
 )
 
-from . import core
+from . import core, history
 from .tokens import dump_token, load_token, make_serializer
 
 bp = Blueprint("web", __name__)
@@ -112,7 +112,8 @@ def confirm_form():
 
     live_path, backup_path = _paths()
     result = core.confirm_restore(
-        live_path, backup_path, payload, enforce_snapshot=enforce_snapshot
+        live_path, backup_path, payload,
+        enforce_snapshot=enforce_snapshot, channel="web",
     )
 
     if result["ok"]:
@@ -213,6 +214,7 @@ def live_link_add():
         link_no=(form.get("link_no") or "").strip() or None,
         cable_type=(form.get("cable_type") or "").strip() or None,
         remark=(form.get("remark") or "").strip() or None,
+        channel="web",
     )
     if result["ok"]:
         lk = result["link"]
@@ -225,7 +227,9 @@ def live_link_add():
 
 @bp.post("/live/links/<int:link_id>/delete")
 def live_link_delete(link_id: int):
-    result = core.delete_live_link(current_app.config["LIVE_DB"], link_id)
+    result = core.delete_live_link(
+        current_app.config["LIVE_DB"], link_id, channel="web"
+    )
     if result["ok"]:
         flash(f"已从现库删除链路 #{link_id}，相关端口已释放。", "ok")
     else:
@@ -247,6 +251,7 @@ def live_port_remark(port_id: int):
 
 
 @bp.post("/demo/reseed")
+@bp.get("/demo/reseed")
 def demo_reseed():
     from .seed import seed_demo
 
@@ -329,10 +334,16 @@ def api_confirm():
         current_app.config["BACKUP_DB"],
         payload,
         enforce_snapshot=enforce_snapshot,
+        channel="api",
     )
     if result["ok"]:
         return jsonify(
-            {"ok": True, "count": result["count"], "restored": result["restored"]}
+            {
+                "ok": True,
+                "count": result["count"],
+                "restored": result["restored"],
+                "revision": result.get("revision"),
+            }
         )
 
     status = result.get("status", 409)
@@ -365,6 +376,7 @@ def api_live_links():
 
 
 @bp.post("/api/live/links")
+@bp.post("/api/live/links/add")
 def api_live_link_add():
     data = request.get_json(silent=True) or {}
 
@@ -382,6 +394,7 @@ def api_live_link_add():
         link_no=data.get("link_no"),
         cable_type=data.get("cable_type"),
         remark=data.get("remark"),
+        channel="api",
     )
     return jsonify(result), (200 if result["ok"] else result.get("status", 400))
 
@@ -389,7 +402,9 @@ def api_live_link_add():
 @bp.delete("/api/live/links/<int:link_id>")
 @bp.post("/api/live/links/<int:link_id>/delete")
 def api_live_link_delete(link_id: int):
-    result = core.delete_live_link(current_app.config["LIVE_DB"], link_id)
+    result = core.delete_live_link(
+        current_app.config["LIVE_DB"], link_id, channel="api"
+    )
     return jsonify(result), (200 if result["ok"] else result.get("status", 404))
 
 
@@ -403,11 +418,326 @@ def api_live_port_update(port_id: int):
 
 
 @bp.post("/api/demo/reseed")
+@bp.get("/api/demo/reseed")
 def api_demo_reseed():
     from .seed import seed_demo
 
     seed_demo(current_app.config["LIVE_DB"], current_app.config["BACKUP_DB"])
     return jsonify({"ok": True})
+
+
+# ===========================================================================
+# 接线历史（HTML 页面 + JSON API；同一套 core/history 查询语义）
+# ===========================================================================
+_REV_START_KEYS = (
+    "start", "from", "begin", "since",
+    "start_rev", "from_rev", "start_revision", "from_revision",
+    "start_no", "from_no", "start_number", "from_number",
+    "start_change", "from_change", "start_change_no", "from_change_no",
+    "start_change_id", "from_change_id", "start_id", "from_id",
+    "rev1", "r1", "n1",
+)
+_REV_END_KEYS = (
+    "end", "to", "until", "stop",
+    "end_rev", "to_rev", "end_revision", "to_revision",
+    "end_no", "to_no", "end_number", "to_number",
+    "end_change", "to_change", "end_change_no", "to_change_no",
+    "end_change_id", "to_change_id", "end_id", "to_id",
+    "rev2", "r2", "n2",
+)
+_SEGMENT_KEYS = (
+    "segment_id", "segment", "epoch_id", "epoch",
+    "generation", "history_id", "sid",
+)
+
+
+def _hist_params() -> dict:
+    """合并 query string、表单与 JSON body，方便自动化用任意常见传参方式。"""
+    params: dict = {}
+    params.update(request.args.to_dict(flat=True))
+    if request.form:
+        params.update(request.form.to_dict(flat=True))
+    if request.is_json:
+        body = request.get_json(silent=True) or {}
+        if isinstance(body, dict):
+            for k, v in body.items():
+                params[k] = v
+    return params
+
+
+def _first_param(params: dict, *names: str):
+    for name in names:
+        value = params.get(name)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _parse_rev_number(params: dict, keys) -> tuple:
+    raw = _first_param(params, *keys)
+    if raw is None:
+        return None, None
+    if isinstance(raw, bool):
+        return None, "变更编号必须是整数。"
+    try:
+        return int(str(raw).strip()), None
+    except (TypeError, ValueError):
+        return None, f"变更编号无法识别：{raw!r}（应为整数编号）。"
+
+
+def _parse_history_request(params: dict) -> dict:
+    """把各种常见参数名归一为 query_port_history 的关键字。"""
+    kwargs: dict = {}
+    errors = []
+
+    seg = _first_param(params, *_SEGMENT_KEYS)
+    if seg is not None:
+        kwargs["segment_id"] = str(seg)
+
+    port_id_raw = _first_param(params, "port_id", "pid")
+    asset = _first_param(
+        params, "asset_no", "asset", "a_asset", "a_asset_no", "self_asset"
+    )
+    port_name = _first_param(
+        params, "port_name", "port", "a_port", "port_name_",
+        "self_port", "p", "name",
+    )
+    port_coord = _first_param(
+        params, "port", "coord", "port_coord", "q", "selected_port", "target"
+    )
+
+    if port_id_raw is not None:
+        try:
+            kwargs["port_id"] = int(str(port_id_raw).strip())
+        except (TypeError, ValueError):
+            errors.append("port_id 必须是整数端口记录号。")
+    elif asset is not None and (port_name is not None or port_coord is not None):
+        kwargs["asset_no"] = str(asset).strip()
+        kwargs["port_name"] = str(port_name or port_coord).strip()
+    elif port_coord is not None:
+        text = str(port_coord).strip()
+        if text.isdigit():
+            kwargs["port_id"] = int(text)
+        else:
+            asset_part = port_part = None
+            if "/" in text:
+                # 资产号不含 "/"，端口名自身可含 "/"（如 GE1/0/2），只切第一刀
+                asset_part, port_part = text.split("/", 1)
+            else:
+                for sep in ("／", "|", "｜", ",", "，"):
+                    if sep in text:
+                        asset_part, port_part = text.split(sep, 1)
+                        break
+            if asset_part is not None and port_part is not None:
+                kwargs["asset_no"] = asset_part.strip()
+                kwargs["port_name"] = port_part.strip()
+            else:
+                errors.append(
+                    "端口坐标格式应为「资产号/端口名」，例如 ZC-PP-11/P03。"
+                )
+
+    start, err = _parse_rev_number(params, _REV_START_KEYS)
+    if err:
+        errors.append(err)
+    elif start is not None:
+        kwargs["start"] = start
+
+    end, err = _parse_rev_number(params, _REV_END_KEYS)
+    if err:
+        errors.append(err)
+    elif end is not None:
+        kwargs["end"] = end
+
+    if errors:
+        return {"errors": errors}
+    return {"kwargs": kwargs}
+
+
+def _history_overview(live_path: str) -> dict:
+    overview = history.list_revisions(live_path)
+    overview["ports"] = history.port_options(live_path)
+    overview["ok"] = True
+    return overview
+
+
+@bp.route("/history", methods=["GET", "POST"])
+@bp.route("/wiring-history", methods=["GET", "POST"])
+@bp.route("/live/history", methods=["GET", "POST"])
+def history_page():
+    live_path = current_app.config["LIVE_DB"]
+    params = _hist_params()
+
+    overview = _history_overview(live_path)
+    revisions = overview["revisions"]
+    latest = overview["latest_number"] or 1
+
+    result = None
+    query_error = None
+    selected_port_id = params.get("port_id", "")
+    selected_start = params.get("start", "1") or "1"
+    selected_end = params.get("end", str(latest)) or str(latest)
+
+    has_query = any(
+        params.get(k) for k in ("port_id", "port", "asset_no", "port_name", "q")
+    )
+    if has_query:
+        parsed = _parse_history_request(params)
+        if "errors" in parsed:
+            query_error = "；".join(parsed["errors"])
+            flash(query_error, "error")
+        else:
+            result = history.query_port_history(live_path, **parsed["kwargs"])
+            if not result.get("ok"):
+                query_error = result.get("error", "查询失败")
+                flash(query_error, "error")
+                result = None
+            else:
+                p = result["port"]
+                selected_port_id = p.get("port_id") or selected_port_id
+                selected_start = result["start_rev"]
+                selected_end = result["end_rev"]
+
+    return render_template(
+        "history.html",
+        ports=overview["ports"],
+        revisions=revisions,
+        segments=overview["segments"],
+        current_segment=overview.get("segment"),
+        latest_number=latest,
+        result=result,
+        query_error=query_error,
+        selected_port_id=selected_port_id,
+        selected_start=selected_start,
+        selected_end=selected_end,
+    )
+
+
+@bp.get("/api/history")
+@bp.get("/api/wiring-history")
+@bp.get("/api/live/history")
+@bp.get("/api/history/changes")
+def api_history_get():
+    live_path = current_app.config["LIVE_DB"]
+    params = _hist_params()
+    parsed = _parse_history_request(params)
+    if "errors" in parsed:
+        return jsonify({"ok": False, "errors": parsed["errors"]}), 400
+
+    kwargs = parsed["kwargs"]
+    wants_query = any(
+        kwargs.get(k) is not None for k in ("port_id", "asset_no")
+    )
+    if not wants_query:
+        return jsonify(_history_overview(live_path))
+
+    result = history.query_port_history(live_path, **kwargs)
+    if not result.get("ok"):
+        return jsonify(result), result.get("status", 400)
+    # 顺带返回编号列表与端口列表，方便自动化一次拿全
+    result["revisions"] = history.list_revisions(
+        live_path, segment_id=result.get("segment_id")
+    )["revisions"]
+    return jsonify(result)
+
+
+@bp.post("/api/history/query")
+@bp.post("/api/history")
+def api_history_query_post():
+    live_path = current_app.config["LIVE_DB"]
+    params = _hist_params()
+    parsed = _parse_history_request(params)
+    if "errors" in parsed:
+        return jsonify({"ok": False, "errors": parsed["errors"]}), 400
+    result = history.query_port_history(live_path, **parsed["kwargs"])
+    if not result.get("ok"):
+        return jsonify(result), result.get("status", 400)
+    return jsonify(result)
+
+
+@bp.get("/api/history/port/<int:port_id>")
+@bp.get("/api/history/port/<int:port_id>/<int:start>/<int:end>")
+@bp.get("/api/history/<int:port_id>/<int:start>/<int:end>")
+@bp.get("/api/live/history/port/<int:port_id>")
+@bp.get("/api/live/history/port/<int:port_id>/<int:start>/<int:end>")
+@bp.get("/api/live/ports/<int:port_id>/history")
+@bp.get("/api/ports/<int:port_id>/history")
+@bp.get("/api/wiring-history/port/<int:port_id>")
+@bp.get("/api/wiring-history/port/<int:port_id>/<int:start>/<int:end>")
+def api_history_path_query(port_id: int, start: int = 1, end: int | None = None):
+    live_path = current_app.config["LIVE_DB"]
+    params = _hist_params()
+    segment = _first_param(params, *_SEGMENT_KEYS)
+    # 嵌套路由常用 start_at/end_at、from_id/to_id 等，_hist_params 已合并；
+    # 若路径未给区间而 query 给了，从参数解析补齐。
+    if end is None:
+        parsed = _parse_history_request(params)
+        kw = parsed.get("kwargs", {})
+        start = kw.get("start", start)
+        end = kw.get("end")
+        if segment is None:
+            segment = kw.get("segment_id")
+    result = history.query_port_history(
+        live_path,
+        port_id=port_id,
+        start=start,
+        end=end,
+        segment_id=segment,
+    )
+    if not result.get("ok"):
+        return jsonify(result), result.get("status", 400)
+    return jsonify(result)
+
+
+@bp.get("/api/history/revisions")
+@bp.get("/api/live/history/revisions")
+@bp.get("/api/wiring-history/revisions")
+@bp.get("/api/revisions")
+@bp.get("/api/changes")
+def api_history_revisions():
+    live_path = current_app.config["LIVE_DB"]
+    segment = _first_param(request.args, *_SEGMENT_KEYS)
+    all_segments = request.args.get("all") in ("1", "true", "yes")
+    overview = history.list_revisions(
+        live_path, segment_id=segment, include_all_segments=all_segments
+    )
+    return jsonify(overview)
+
+
+@bp.get("/api/history/revisions/<int:rev_no>")
+@bp.get("/api/revisions/<int:rev_no>")
+def api_history_revision_detail(rev_no: int):
+    segment = _first_param(request.args, *_SEGMENT_KEYS)
+    result = history.get_revision_detail(
+        current_app.config["LIVE_DB"], rev_no, segment_id=segment
+    )
+    return jsonify(result), (200 if result.get("ok") else result.get("status", 404))
+
+
+@bp.get("/api/history/segments")
+@bp.get("/api/history/epochs")
+def api_history_segments():
+    segments = history.list_segments(current_app.config["LIVE_DB"])
+    current = None
+    if segments:
+        # meta 中取当前段
+        from .db import connect as _connect
+
+        conn = _connect(current_app.config["LIVE_DB"])
+        try:
+            current = history.current_segment_id(conn)
+        finally:
+            conn.close()
+    return jsonify(
+        {"ok": True, "segments": segments, "epochs": segments,
+         "current_segment_id": current, "epoch_id": current}
+    )
+
+
+@bp.get("/api/history/ports")
+def api_history_ports():
+    return jsonify(
+        {"ok": True, "ports": history.port_options(current_app.config["LIVE_DB"])}
+    )
 
 
 def _dbs():

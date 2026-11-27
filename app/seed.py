@@ -167,6 +167,15 @@ def _build_db(path: str, *, backup: bool) -> None:
             "INSERT INTO sqlite_sequence(name, seq) VALUES ('links', ?)",
             (max_link_id,),
         )
+
+        # 为现库播种出的已有接线写新历史段的 #1 起始编号（与播种同一事务）。
+        # 每次 seed_demo 都重建库文件，因此重置演示数据后必然是一个全新历史段，
+        # 旧段编号不会指向新库记录。备份库不使用接线历史，只保留空表结构。
+        if not backup:
+            from . import history
+
+            history.ensure_active_segment(conn, reason="seed")
+
         conn.commit()
     except Exception:
         conn.rollback()
@@ -185,11 +194,18 @@ def ensure_seed(live_path: str, backup_path: str) -> bool:
     """数据库缺失或未初始化时写入演示数据。返回是否执行了播种。"""
     from .db import is_initialized
 
-    if is_initialized(live_path) and is_initialized(backup_path):
-        return False
-    os.makedirs(os.path.dirname(os.path.abspath(live_path)), exist_ok=True)
-    seed_demo(live_path, backup_path)
-    return True
+    did = False
+    if not (is_initialized(live_path) and is_initialized(backup_path)):
+        os.makedirs(os.path.dirname(os.path.abspath(live_path)), exist_ok=True)
+        seed_demo(live_path, backup_path)
+        did = True
+
+    # 旧版本已有的 live.db（无历史表 / 无起始编号）在此无损升级：
+    # 首次为已有接线补一个起始变更编号，重启后幂等不重复。
+    from . import history
+
+    history.ensure_history(live_path)
+    return did
 
 
 if __name__ == "__main__":
